@@ -6,7 +6,6 @@ RUN apk add --no-cache \
     bash \
     iproute2 \
     wireguard-tools \
-    wireguard-go \
     iptables \
     tailscale \
     ca-certificates \
