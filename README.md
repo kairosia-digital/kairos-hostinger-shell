@@ -8,9 +8,7 @@ Plantilla pública Docker Compose (*Cascarón Público*) para el despliegue 1-Cl
 
 ## Despliegue 1-Click en Hostinger
 
-```text
-https://www.hostinger.com/deploy?template=kairosia-digital/kairos-hostinger-shell&ref=PARTNER_CODE
-```
+[![Deploy on Hostinger](https://assets.hostinger.com/vps/deploy.svg)](https://www.hostinger.com/es/docker-hosting?compose_url=https://raw.githubusercontent.com/kairosia-digital/kairos-hostinger-shell/main/docker-compose.yml&REFERRALCODE=WN8LORENZMQY)
 
 ### Arquitectura del Stack (`docker-compose.yml`)
 
