@@ -1,0 +1,93 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=4GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_connections=120
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - random_page_cost=1.1
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kairos_pg_internal_change_me}
+      POSTGRES_DB: postgres
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-odoo} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - kairos-internal
+
+  odoo:
+    build: .
+    image: ${KAIROS_SHELL_IMAGE:-ghcr.io/kairosia-digital/kairos-hostinger-shell:19.0}
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8069:8069"
+      - "8072:8072"
+      - "${WG_LISTEN_PORT:-51820}:51820/udp"
+    tmpfs:
+      - /dev/shm:rw,nosuid,nodev,size=512m
+    volumes:
+      - odoo-web-data:/var/lib/odoo
+      - odoo-extra-addons:/mnt/extra-addons
+      - odoo-config:/etc/odoo
+      - kairos-vpn-data:/etc/kairos-vpn
+    environment:
+      PROVISION_TOKEN: ${PROVISION_TOKEN:-}
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-https://kaito.ddns.net}
+      INSTANCE_FQDN: ${INSTANCE_FQDN:-}
+      ODOO_INITIAL_ADMIN_PASSWORD: ${ODOO_INITIAL_ADMIN_PASSWORD:-}
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-odoo}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-kairos_pg_internal_change_me}
+      SHELL_VERSION: "19.0.1.0.0"
+      KAIROS_STRICT_PREFLIGHT: ${KAIROS_STRICT_PREFLIGHT:-true}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.kairos-odoo.loadbalancer.server.port=8069"
+    networks:
+      - kairos-internal
+
+  vpn:
+    build: ./vpn
+    image: ${KAIROS_VPN_IMAGE:-ghcr.io/kairosia-digital/kairos-hostinger-vpn:19.0}
+    restart: always
+    network_mode: "service:odoo"
+    depends_on:
+      - odoo
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - kairos-vpn-data:/etc/kairos-vpn
+
+volumes:
+  odoo-db-data:
+  odoo-web-data:
+  odoo-extra-addons:
+  odoo-config:
+  kairos-vpn-data:
+
+networks:
+  kairos-internal:
+    driver: bridge
