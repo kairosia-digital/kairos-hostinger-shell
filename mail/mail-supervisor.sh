@@ -132,7 +132,6 @@ EOF
     postconf -e "inet_protocols = ipv4"
     postconf -e "virtual_mailbox_domains = ${domain}"
     postconf -e "virtual_mailbox_maps = lmdb:/etc/postfix/vmailbox"
-    postconf -e "virtual_transport = lmdb:/etc/postfix/vmailbox"
     postconf -e "virtual_transport = lmtp:unix:private/dovecot-lmtp"
     postconf -e "smtpd_recipient_restrictions = permit_mynetworks, reject_unauth_destination, reject_unlisted_recipient"
     postconf -e "default_transport = error:Outbound mail disabled on ingestion-only mailbox"
