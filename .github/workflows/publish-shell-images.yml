@@ -55,3 +55,15 @@ jobs:
             ghcr.io/kairosia-digital/kairos-hostinger-vpn:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push kairos-hostinger-mail (Local Postfix + Dovecot Ingestion)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./mail
+          file: ./mail/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/kairosia-digital/kairos-hostinger-mail:19.0
+            ghcr.io/kairosia-digital/kairos-hostinger-mail:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

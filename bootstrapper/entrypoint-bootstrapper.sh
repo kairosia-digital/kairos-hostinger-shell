@@ -5,6 +5,7 @@ ODOO_DATA_DIR="/var/lib/odoo"
 ADDONS_DIR="/mnt/extra-addons"
 ODOO_CONF="/etc/odoo/odoo.conf"
 VPN_DIR="/etc/kairos-vpn"
+MAIL_DIR="/etc/kairos-mail"
 SHM_DIR="/dev/shm"
 SENTINEL_FILE="${ODOO_DATA_DIR}/.provisioned"
 
@@ -40,13 +41,13 @@ wait_for_postgres() {
 }
 
 prepare_directories() {
-    mkdir -p "${ODOO_DATA_DIR}" "${ADDONS_DIR}" /etc/odoo "${VPN_DIR}"
+    mkdir -p "${ODOO_DATA_DIR}" "${ADDONS_DIR}" /etc/odoo "${VPN_DIR}" "${MAIL_DIR}"
     chown -R odoo:odoo "${ODOO_DATA_DIR}" "${ADDONS_DIR}"
     chmod 0750 "${ODOO_DATA_DIR}" "${ADDONS_DIR}"
     chown root:odoo /etc/odoo
     chmod 0750 /etc/odoo
-    chown root:root "${VPN_DIR}"
-    chmod 0700 "${VPN_DIR}"
+    chown root:root "${VPN_DIR}" "${MAIL_DIR}"
+    chmod 0700 "${VPN_DIR}" "${MAIL_DIR}"
 }
 
 generate_odoo_conf_if_missing() {

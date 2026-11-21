@@ -6,9 +6,11 @@ import hmac
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -33,6 +35,7 @@ class BootstrapPaths:
     addons_dir: Path = Path('/mnt/extra-addons')
     odoo_conf: Path = Path('/etc/odoo/odoo.conf')
     vpn_dir: Path = Path('/etc/kairos-vpn')
+    mail_dir: Path = Path('/etc/kairos-mail')
     shm_dir: Path = Path('/dev/shm')
     inject_script_path: Path = Path('/opt/kairos-bootstrapper/inject_config.py')
     db_name: str = 'odoo_prod'
@@ -442,6 +445,49 @@ def write_vpn_config(vpn_dir: Path, payload: dict[str, Any]) -> str:
     raise RuntimeError(f'Modo VPN no soportado: {mode}')
 
 
+def write_mail_config(
+    mail_dir: Path,
+    payload: dict[str, Any],
+    wait_seconds: float = 15.0,
+) -> bool:
+    """Persist local Postfix/Dovecot ingestion settings under /etc/kairos-mail for mail container."""
+    mail_cfg = payload.get('mail_local') or {}
+    enabled = bool(mail_cfg.get('enabled', False))
+    domain = str(mail_cfg.get('domain') or '').strip().lower()
+    user = str(mail_cfg.get('user') or '').strip().lower()
+    password = str(mail_cfg.get('password') or '')
+    purge_days = max(int(mail_cfg.get('purge_seen_days') or 45), 1)
+
+    mail_dir.mkdir(parents=True, exist_ok=True)
+    if enabled and (not domain or not user or not password):
+        raise RuntimeError('Payload de buzón local en VPS incompleto (dominio, usuario o clave faltantes).')
+
+    env_lines = [
+        f"MAIL_ENABLED={'true' if enabled else 'false'}",
+        f'MAIL_DOMAIN={shlex.quote(domain)}',
+        f'MAIL_USER={shlex.quote(user)}',
+        f'MAIL_PASSWORD={shlex.quote(password)}',
+        f'PURGE_SEEN_DAYS={purge_days}',
+        '',
+    ]
+    _write_secret_file(mail_dir / 'mail.env', '\n'.join(env_lines), mode=0o600)
+    _write_secret_file(mail_dir / '.reload', 'reload\n', mode=0o600)
+
+    if enabled and mail_dir == Path('/etc/kairos-mail') and wait_seconds > 0:
+        status_file = mail_dir / 'status.json'
+        deadline = time.monotonic() + float(wait_seconds)
+        while time.monotonic() < deadline:
+            if status_file.is_file():
+                try:
+                    status_data = json.loads(status_file.read_text(encoding='utf-8'))
+                    if status_data.get('ready') and status_data.get('enabled') and status_data.get('user') == user:
+                        return True
+                except Exception:
+                    pass
+            time.sleep(0.5)
+    return enabled
+
+
 def cleanup_shm_files(paths: BootstrapPaths) -> None:
     """Remove any transient secrets or module archives in /dev/shm."""
     for target in (paths.shm_tar_path, paths.shm_payload_path, paths.shm_result_path):
@@ -460,6 +506,13 @@ def cleanup_rollback_dirs(paths: BootstrapPaths) -> None:
             shutil.rmtree(addon_path, ignore_errors=True)
     for vpn_file in ('wg0.raw.conf', 'wg0.env', 'tailscale.key', 'vpn-mode', '.reload'):
         target = paths.vpn_dir / vpn_file
+        try:
+            if target.exists():
+                target.unlink()
+        except OSError:
+            pass
+    for mail_file in ('mail.env', 'status.json', '.reload'):
+        target = paths.mail_dir / mail_file
         try:
             if target.exists():
                 target.unlink()
@@ -509,6 +562,8 @@ class ProvisioningOrchestrator:
                 timeout=30,
             )
             installation_id = str(hs.get('installation_id') or '').strip()
+            assigned_fqdn = str(hs.get('assigned_fqdn') or '').strip()
+            effective_fqdn = assigned_fqdn or instance_fqdn
             module_version = str(hs.get('module_version') or '').strip()
             download_url = str(hs.get('module_download_url') or '').strip()
             expected_sha = str(hs.get('module_sha256') or '').strip()
@@ -544,6 +599,7 @@ class ProvisioningOrchestrator:
             )
             self._collect_payload_secrets(payload, known_secrets)
             write_vpn_config(self.paths.vpn_dir, payload)
+            write_mail_config(self.paths.mail_dir, payload)
 
             # Paso 4: Inicialización Odoo 19 + inyección ORM + preflights Gemini/IMAP
             current_stage = 'odoo_init_and_inject'
@@ -563,7 +619,7 @@ class ProvisioningOrchestrator:
                 self.paths.shm_result_path,
                 {
                     'KAIROS_ORCHESTRATOR_URL': base_url,
-                    'KAIROS_INSTANCE_FQDN': instance_fqdn,
+                    'KAIROS_INSTANCE_FQDN': effective_fqdn,
                     'KAIROS_INITIAL_ADMIN_PASSWORD': initial_admin_password,
                     'KAIROS_STRICT_PREFLIGHT': 'true' if self.strict_preflight else 'false',
                 },
@@ -578,7 +634,7 @@ class ProvisioningOrchestrator:
 
             complete_body = {
                 'stage': stage,
-                'instance_fqdn': instance_fqdn,
+                'instance_fqdn': effective_fqdn,
                 'module_version': module_version,
                 'gemini_check_ok': bool(inject_result.get('gemini_check_ok', False)),
                 'imap_check_ok': bool(inject_result.get('imap_check_ok', False)),
@@ -639,7 +695,7 @@ class ProvisioningOrchestrator:
 
     @staticmethod
     def _collect_payload_secrets(payload: dict[str, Any], out: list[str]) -> None:
-        for group_key in ('gemini', 'imap', 'vpn', 'a3erp_bridge'):
+        for group_key in ('gemini', 'imap', 'mail_local', 'vpn', 'a3erp_bridge'):
             section = payload.get(group_key)
             if isinstance(section, dict):
                 for val in section.values():

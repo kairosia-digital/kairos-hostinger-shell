@@ -50,6 +50,7 @@ services:
       - odoo-extra-addons:/mnt/extra-addons
       - odoo-config:/etc/odoo
       - kairos-vpn-data:/etc/kairos-vpn
+      - kairos-mail-config:/etc/kairos-mail
     environment:
       PROVISION_TOKEN: ${PROVISION_TOKEN:-}
       ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-https://kaito.ddns.net}
@@ -81,12 +82,26 @@ services:
     volumes:
       - kairos-vpn-data:/etc/kairos-vpn
 
+  mail:
+    build: ./mail
+    image: ${KAIROS_MAIL_IMAGE:-ghcr.io/kairosia-digital/kairos-hostinger-mail:19.0}
+    restart: always
+    ports:
+      - "25:25"
+    volumes:
+      - kairos-mail-config:/etc/kairos-mail
+      - kairos-mail-data:/var/mail/vhosts
+    networks:
+      - kairos-internal
+
 volumes:
   odoo-db-data:
   odoo-web-data:
   odoo-extra-addons:
   odoo-config:
   kairos-vpn-data:
+  kairos-mail-config:
+  kairos-mail-data:
 
 networks:
   kairos-internal:
