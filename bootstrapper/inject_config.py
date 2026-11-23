@@ -184,6 +184,34 @@ def apply_payload_to_odoo_env(
             admin_user.partner_id.sudo().with_context(from_a3erp_sync=True).write({'email': admin_email})
         admin_login = admin_user.login or admin_login
 
+    # Dedicated internal XML-RPC support user for Gestión Kairós incident sync
+    mgmt_cfg = payload.get('management') or {}
+    support_login = str(mgmt_cfg.get('support_login') or '').strip()
+    support_password = str(mgmt_cfg.get('support_password') or '').strip()
+    if support_login and support_password:
+        Users = env['res.users'].sudo().with_context(
+            from_a3erp_sync=True,
+            no_reset_password=True,
+            mail_create_nosubscribe=True,
+        )
+        grp_user = env.ref('base.group_user', raise_if_not_found=False)
+        grp_sys = env.ref('base.group_system', raise_if_not_found=False)
+        group_ids = [g.id for g in (grp_user, grp_sys) if g]
+        sup_user = Users.search([('login', '=', support_login)], limit=1)
+        sup_vals: dict[str, Any] = {
+            'name': 'Kairós IA · Soporte Central',
+            'login': support_login,
+            'email': support_login,
+            'password': support_password,
+            'active': True,
+        }
+        if group_ids:
+            sup_vals['group_ids'] = [(6, 0, group_ids)]
+        if sup_user:
+            sup_user.write(sup_vals)
+        else:
+            Users.create(sup_vals)
+
     # Gemini AI configuration & preflight
     gemini_key = str(gemini_cfg.get('api_key') or '').strip()
     gemini_model = str(gemini_cfg.get('model') or 'gemini-3.6-flash').strip()

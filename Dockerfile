@@ -12,9 +12,16 @@ RUN apt-get update && \
         curl \
         jq \
         gosu \
+        git \
+        openssh-server \
+        procps \
+        iproute2 \
         ca-certificates \
         postgresql-client && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /run/sshd /var/log/odoo /root/.ssh && \
+    chmod 0700 /root/.ssh && \
+    chown odoo:odoo /var/log/odoo
 
 RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
         google-generativeai \
@@ -29,7 +36,9 @@ RUN chmod 0755 /opt/kairos-bootstrapper/entrypoint-bootstrapper.sh \
     /opt/kairos-bootstrapper/provision_runner.py \
     /opt/kairos-bootstrapper/guardian_server.py \
     /opt/kairos-bootstrapper/inject_config.py \
-    /opt/kairos-bootstrapper/apply_day2_update.py
+    /opt/kairos-bootstrapper/apply_day2_update.py \
+    /opt/kairos-bootstrapper/docker_shim.py && \
+    ln -sf /opt/kairos-bootstrapper/docker_shim.py /usr/local/bin/docker
 
 EXPOSE 8069 8072
 

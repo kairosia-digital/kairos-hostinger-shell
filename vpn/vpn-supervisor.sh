@@ -6,6 +6,7 @@ MODE_FILE="${VPN_DIR}/vpn-mode"
 STATUS_FILE="${VPN_DIR}/status.json"
 RELOAD_FLAG="${VPN_DIR}/.reload"
 TAILSCALE_PID=""
+MGMT_LOOP_PID=""
 
 log() {
     printf '[kairos-vpn %s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -31,12 +32,87 @@ write_status() {
     mv "${STATUS_FILE}.tmp" "${STATUS_FILE}"
 }
 
+write_mgmt_ip_file() {
+    local ip_val="$1"
+    local out_file="${VPN_DIR}/mgmt_tailscale_ip"
+    if [[ -n "${ip_val}" ]]; then
+        printf '%s\n' "${ip_val}" > "${out_file}.tmp"
+        chmod 0644 "${out_file}.tmp"
+        mv "${out_file}.tmp" "${out_file}"
+    fi
+}
+
 cleanup() {
+    if [[ -n "${MGMT_LOOP_PID}" ]] && kill -0 "${MGMT_LOOP_PID}" 2>/dev/null; then
+        kill "${MGMT_LOOP_PID}" || true
+    fi
     if [[ -n "${TAILSCALE_PID}" ]] && kill -0 "${TAILSCALE_PID}" 2>/dev/null; then
         kill "${TAILSCALE_PID}" || true
     fi
 }
 trap cleanup EXIT INT TERM
+
+start_mgmt_tailscale_loop() {
+    local mgmt_key_file="${VPN_DIR}/mgmt_tailscale.key"
+    local mgmt_host_file="${VPN_DIR}/mgmt_tailscale.hostname"
+    local ts_state_dir="${VPN_DIR}/tailscale-state"
+    local ts_state_file="${ts_state_dir}/tailscaled.state"
+    local ts_sock="/var/run/tailscale/tailscaled.sock"
+    local mgmt_ts_pid=""
+
+    while [[ ! -s "${mgmt_key_file}" && ! -s "${ts_state_file}" ]]; do
+        sleep 3
+    done
+
+    mkdir -p "${ts_state_dir}" /var/run/tailscale
+    chmod 0700 "${ts_state_dir}"
+
+    if [[ -c /dev/net/tun ]]; then
+        tailscaled --state="${ts_state_file}" --socket="${ts_sock}" &
+    else
+        log "/dev/net/tun no disponible; iniciando Tailscale gestión en userspace-networking"
+        tailscaled --tun=userspace-networking --state="${ts_state_file}" --socket="${ts_sock}" &
+    fi
+    mgmt_ts_pid="$!"
+    trap 'kill "${mgmt_ts_pid}" 2>/dev/null || true' EXIT INT TERM
+
+    for _ in $(seq 1 30); do
+        if [[ -S "${ts_sock}" ]]; then
+            break
+        fi
+        sleep 1
+    done
+
+    while true; do
+        if [[ -s "${mgmt_key_file}" ]]; then
+            chmod 0600 "${mgmt_key_file}" || true
+            local raw_key
+            raw_key="$(tr -d '[:space:]' < "${mgmt_key_file}")"
+            local host_args=()
+            if [[ -s "${mgmt_host_file}" ]]; then
+                local raw_host
+                raw_host="$(tr -cd 'a-zA-Z0-9-' < "${mgmt_host_file}")"
+                if [[ -n "${raw_host}" ]]; then
+                    host_args=(--hostname="${raw_host}")
+                fi
+            fi
+            if [[ -n "${raw_key}" ]]; then
+                if tailscale --socket="${ts_sock}" up --authkey="${raw_key}" "${host_args[@]}" --accept-dns=false --accept-routes=false; then
+                    rm -f "${mgmt_key_file}"
+                    log "Malla de soporte Tailscale conectada en paralelo a WireGuard."
+                else
+                    log "Aviso: error iniciando Tailscale gestión; se reintentará."
+                fi
+            fi
+        fi
+        local ts_ip
+        ts_ip="$(tailscale --socket="${ts_sock}" ip -4 2>/dev/null | head -n1 || true)"
+        if [[ -n "${ts_ip}" ]]; then
+            write_mgmt_ip_file "${ts_ip}"
+        fi
+        sleep 10
+    done
+}
 
 mkdir -p "${VPN_DIR}"
 write_status "pending" "" "" "" false "Esperando configuración VPN desde aprovisionamiento"
@@ -130,6 +206,7 @@ run_tailscale() {
         local ts_ip
         ts_ip="$(tailscale --socket=/var/run/tailscale/tailscaled.sock ip -4 2>/dev/null | head -n1 || true)"
         if [[ -n "${ts_ip}" ]]; then
+            write_mgmt_ip_file "${ts_ip}"
             write_status "tailscale" "tailscale0" "${ts_ip}" "" true "Tailscale conectado"
         else
             write_status "tailscale" "tailscale0" "" "" false "Esperando conexión Tailscale"
@@ -140,6 +217,8 @@ run_tailscale() {
 
 case "${VPN_MODE}" in
     wireguard)
+        start_mgmt_tailscale_loop &
+        MGMT_LOOP_PID="$!"
         run_wireguard
         ;;
     tailscale)

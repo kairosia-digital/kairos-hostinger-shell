@@ -445,6 +445,68 @@ def write_vpn_config(vpn_dir: Path, payload: dict[str, Any]) -> str:
     raise RuntimeError(f'Modo VPN no soportado: {mode}')
 
 
+def write_management_config(
+    vpn_dir: Path,
+    payload: dict[str, Any],
+    wait_seconds: float = 8.0,
+) -> str:
+    """Persist SSH support public key & management Tailscale key and wait briefly for 100.x.y.z IP."""
+    mgmt = payload.get('management') or {}
+    if not isinstance(mgmt, dict):
+        return ''
+
+    vpn_dir.mkdir(parents=True, exist_ok=True)
+    ssh_pub = str(mgmt.get('agent_ssh_public_key') or '').strip()
+    if ssh_pub:
+        _write_secret_file(vpn_dir / 'authorized_keys', f'{ssh_pub}\n', mode=0o640)
+
+    ts_host = str(mgmt.get('tailscale_hostname') or '').strip()
+    if ts_host:
+        _write_secret_file(vpn_dir / 'mgmt_tailscale.hostname', f'{ts_host}\n', mode=0o644)
+
+    ts_key = str(mgmt.get('tailscale_auth_key') or '').strip()
+    if ts_key:
+        _write_secret_file(vpn_dir / 'mgmt_tailscale.key', f'{ts_key}\n', mode=0o600)
+
+    ip_file = vpn_dir / 'mgmt_tailscale_ip'
+    if ip_file.is_file():
+        cur_ip = ip_file.read_text(encoding='utf-8').strip()
+        if cur_ip.startswith('100.'):
+            return cur_ip
+
+    if ts_key and vpn_dir == Path('/etc/kairos-vpn') and wait_seconds > 0:
+        deadline = time.monotonic() + float(wait_seconds)
+        while time.monotonic() < deadline:
+            if ip_file.is_file():
+                cur_ip = ip_file.read_text(encoding='utf-8').strip()
+                if cur_ip.startswith('100.'):
+                    return cur_ip
+            time.sleep(0.5)
+    return ''
+
+
+def init_addons_git_repo(addons_dir: Path, version: str = '19.0.1.0.0') -> None:
+    """Initialize a baseline local Git repo in /mnt/extra-addons for safe Day-2 patches/rollback."""
+    if not addons_dir.is_dir() or (addons_dir / '.git').exists():
+        return
+    try:
+        subprocess.run(['git', 'init', '-q'], cwd=str(addons_dir), check=True, timeout=10)
+        gitignore = addons_dir / '.gitignore'
+        if not gitignore.exists():
+            gitignore.write_text('__pycache__/\n*.pyc\n*.pyo\n*.kairos_bak*\n', encoding='utf-8')
+        subprocess.run(['git', 'config', 'user.name', 'Kairos Provisioner'], cwd=str(addons_dir), check=True, timeout=5)
+        subprocess.run(['git', 'config', 'user.email', 'provisioner@kairosia.digital'], cwd=str(addons_dir), check=True, timeout=5)
+        subprocess.run(['git', 'add', '-A'], cwd=str(addons_dir), check=True, timeout=15)
+        subprocess.run(
+            ['git', 'commit', '-q', '-m', f'Baseline release {version}'],
+            cwd=str(addons_dir),
+            check=True,
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
 def write_mail_config(
     mail_dir: Path,
     payload: dict[str, Any],
@@ -504,7 +566,17 @@ def cleanup_rollback_dirs(paths: BootstrapPaths) -> None:
         addon_path = paths.addons_dir / addon
         if addon_path.exists():
             shutil.rmtree(addon_path, ignore_errors=True)
-    for vpn_file in ('wg0.raw.conf', 'wg0.env', 'tailscale.key', 'vpn-mode', '.reload'):
+    for vpn_file in (
+        'wg0.raw.conf',
+        'wg0.env',
+        'tailscale.key',
+        'vpn-mode',
+        'authorized_keys',
+        'mgmt_tailscale.key',
+        'mgmt_tailscale.hostname',
+        'mgmt_tailscale_ip',
+        '.reload',
+    ):
         target = paths.vpn_dir / vpn_file
         try:
             if target.exists():
@@ -583,6 +655,7 @@ class ProvisioningOrchestrator:
                     dest_tar_path=self.paths.shm_tar_path,
                 )
                 safe_extract_tar_gz(self.paths.shm_tar_path, self.paths.addons_dir)
+                init_addons_git_repo(self.paths.addons_dir, module_version)
             finally:
                 if self.paths.shm_tar_path.exists():
                     self.paths.shm_tar_path.unlink()
@@ -599,6 +672,7 @@ class ProvisioningOrchestrator:
             )
             self._collect_payload_secrets(payload, known_secrets)
             write_vpn_config(self.paths.vpn_dir, payload)
+            mgmt_ts_ip = write_management_config(self.paths.vpn_dir, payload)
             write_mail_config(self.paths.mail_dir, payload)
 
             # Paso 4: Inicialización Odoo 19 + inyección ORM + preflights Gemini/IMAP
@@ -635,6 +709,7 @@ class ProvisioningOrchestrator:
             complete_body = {
                 'stage': stage,
                 'instance_fqdn': effective_fqdn,
+                'tailscale_ip': mgmt_ts_ip,
                 'module_version': module_version,
                 'gemini_check_ok': bool(inject_result.get('gemini_check_ok', False)),
                 'imap_check_ok': bool(inject_result.get('imap_check_ok', False)),
@@ -695,7 +770,7 @@ class ProvisioningOrchestrator:
 
     @staticmethod
     def _collect_payload_secrets(payload: dict[str, Any], out: list[str]) -> None:
-        for group_key in ('gemini', 'imap', 'mail_local', 'vpn', 'a3erp_bridge'):
+        for group_key in ('gemini', 'imap', 'mail_local', 'vpn', 'a3erp_bridge', 'management'):
             section = payload.get(group_key)
             if isinstance(section, dict):
                 for val in section.values():
